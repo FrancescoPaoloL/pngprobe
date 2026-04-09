@@ -2,6 +2,10 @@
 
 #include <stdio.h>
 
+
+/* Usage: ./pngprobe input.png [output.zip]
+ *   output.zip is optional — if provided, saves the extracted ZIP to disk.
+ */
 int main(int argc, char *argv[])
 {
     if (argc < 2) {
