@@ -36,6 +36,52 @@ Scan and save the extracted ZIP to disk:
 
     ./pngprobe input.png output.zip
 
+## How it works
+
+PNG files are made of blocks called chunks. One type, `tEXt`, stores plain text
+as `key + null byte + value`. This tool walks every chunk, detects long
+base64-encoded values, decodes them, and checks whether the result is a ZIP
+archive containing a PyTorch tensor (`data/0`).
+
+The 90% base64 detection threshold accounts for padding and newlines that are
+valid in base64 strings but not part of the alphabet.
+
+### Data flow
+
+    PNG file
+        |
+        v
+    [signature check] --> not a PNG? stop.
+        |
+        v
+    [chunk walker]
+        |
+        +--> IDAT, IHDR, ...  ignored
+        |
+        +--> tEXt
+                |
+                v
+            [CRC32 check] --> mismatch? warn and continue
+                |
+                v
+            [base64 probe] --> not base64? skip
+                |
+                v
+            [base64 decode]
+                |
+                v
+            [ZIP check] --> not a ZIP? skip
+                |
+                v
+            [ZIP open] --> no data/0? skip
+                |
+                v
+            [float32 reader]
+                |
+                v
+            3072 x float32
+            (steering vector)
+
 ## Example output
 
     === Scanning PNG chunks ===
@@ -60,16 +106,6 @@ Scan and save the extracted ZIP to disk:
     tEXt  key="v_source"  value="cortisol.pt"
     tEXt  key="v_color1"  value="#d21a4e"
     tEXt  key="v_color2"  value="#40eb99"
-
-## How it works
-
-PNG files are made of blocks called chunks. One type, `tEXt`, stores plain text
-as `key + null byte + value`. This tool walks every chunk, detects long
-base64-encoded values, decodes them, and checks whether the result is a ZIP
-archive containing a PyTorch tensor (`data/0`).
-
-The 90% base64 detection threshold accounts for padding and newlines that are
-valid in base64 strings but not part of the alphabet.
 
 ## References
 
