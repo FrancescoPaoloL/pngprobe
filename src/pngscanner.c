@@ -5,12 +5,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <zlib.h>
 
 /* Values shorter than this are printed as plain text, longer ones are probed */
 #define SHORT_VALUE_MAX 64
 
 /*
- * Every PNG file starts with these exact 8 bytes — this is the PNG signature.
+ * Every PNG file starts with these exact 8 bytes this is the PNG signature.
  * If a file does not start with this, it is not a PNG.
  * See: https://www.w3.org/TR/png/#5PNG-file-signature
  */
@@ -60,10 +61,40 @@ static int is_valid_png(const unsigned char *data)
 }
 
 /*
+ * Verifies the CRC32 of a PNG chunk.
+ *
+ * The PNG spec requires a CRC32 checksum at the end of every chunk.
+ * The checksum covers the chunk type (4 bytes) + the chunk data (length bytes).
+ * It does NOT cover the length field itself.
+ *
+ * A mismatch means the chunk is corrupted or has been manually modified.
+ * We treat it as a warning and continue scanning for a forensic tool,
+ * a bad CRC is interesting information, not a reason to stop.
+ *
+ * See: https://www.w3.org/TR/png/#5Chunk-layout
+ */
+static void verify_crc(const char *type, const unsigned char *data,
+                        uint32_t length, uint32_t stored_crc)
+{
+    /*
+     * crc32() from zlib computes CRC32 incrementally.
+     * We start with the type field, then feed in the data.
+     * crc32(0, NULL, 0) returns the initial CRC value.
+     */
+    uLong crc = crc32(0, NULL, 0);
+    crc = crc32(crc, (const Bytef *)type, 4);
+    crc = crc32(crc, (const Bytef *)data, length);
+
+    if ((uint32_t)crc != stored_crc)
+        printf("  [!] CRC mismatch on chunk '%s': expected 0x%08x, got 0x%08x\n",
+               type, (uint32_t)crc, stored_crc);
+}
+
+/*
  * Processes a single tEXt chunk.
  *
  * A tEXt chunk contains a key and a value separated by a null byte.
- * Short values are printed as text. Long values are checked for base64 —
+ * Short values are printed as text. Long values are checked for base64
  * if they decode to a ZIP, we pass them to zip_process().
  *
  * tEXt chunk format: https://www.w3.org/TR/png/#11tEXt
@@ -101,7 +132,7 @@ static void handle_text_chunk(const unsigned char *data, uint32_t length,
     printf("  -> Decoded: %zu bytes\n", dec_len);
 
     /*
-     * ZIP files always start with 'P' and 'K' — the initials of Phil Katz,
+     * ZIP files always start with 'P' and 'K' the initials of Phil Katz,
      * who created the format. This is the ZIP magic number.
      * See: https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT
      */
@@ -132,10 +163,10 @@ void png_scan(const char *path, const char *zip_save_path)
 
     /*
      * A PNG file is a sequence of chunks. Each chunk has:
-     *   4 bytes — data length
-     *   4 bytes — chunk type (e.g. "tEXt", "IDAT", "IEND")
-     *   N bytes — data
-     *   4 bytes — CRC checksum
+     *   4 bytes - data length
+     *   4 bytes - chunk type (e.g. "tEXt", "IDAT", "IEND")
+     *   N bytes - data
+     *   4 bytes - CRC checksum
      *
      * We skip the first 8 bytes (the signature) and walk chunk by chunk.
      * See: https://www.w3.org/TR/png/#5Chunk-layout
@@ -146,12 +177,17 @@ void png_scan(const char *path, const char *zip_save_path)
         char     type[5] = {0};
         memcpy(type, data + pos + 4, 4);
 
+        const unsigned char *chunk_data = data + pos + 8;
+        uint32_t stored_crc = read_u32_be(data + pos + 8 + length);
+
+        verify_crc(type, chunk_data, length, stored_crc);
+
         if (strcmp(type, "tEXt") == 0 && length > 0)
-            handle_text_chunk(data + pos + 8, length, zip_save_path);
+            handle_text_chunk(chunk_data, length, zip_save_path);
 
         pos += 12 + length;
 
-        /* IEND marks the end of the PNG file — no more chunks after this */
+        /* IEND marks the end of the PNG file - no more chunks after this */
         if (strcmp(type, "IEND") == 0) break;
     }
 
